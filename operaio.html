@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frantoio - Accettazione, Prestiti e Rientri</title>
+    <link rel="icon" href="data:,">
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: auto; background-color: #f4f4f9;}
+        .card { background-color: white; border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);}
+        .card-carico { border-left: 5px solid #4CAF50; }
+        .card-prestito { border-left: 5px solid #009688; }
+        .card-rientro { border-left: 5px solid #9C27B0; }
+        .card-molitura { border-left: 5px solid #ff9800; }
+        .card-riepilogo { border-left: 5px solid #2196F3; }
+        input, select, textarea, button { padding: 14px; width: 100%; margin-top: 10px; box-sizing: border-box; border-radius: 6px; border: 1px solid #ccc; font-size: 18px;}
+        textarea { font-size: 16px; font-family: sans-serif; resize: vertical; }
+        button { background-color: #4CAF50; color: white; border: none; font-weight: bold; cursor: pointer; }
+        button:hover { background-color: #45a049; }
+        .btn-scan { background-color: #2196F3; margin-bottom: 10px; }
+        .btn-prestito { background-color: #009688; font-size: 18px; padding: 14px; }
+        .btn-rientro { background-color: #9C27B0; font-size: 18px; padding: 14px; }
+        .btn-chiudi { background-color: #ff9800; }
+        h3 { margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 8px;}
+        #reader, #reader-prestito, #reader-rientro { width: 100%; margin-top: 10px; display: none; }
+        
+        .riga-cliente { padding: 10px 0; border-bottom: 1px dashed #ccc; font-size: 15px; }
+        .badge-casse { float: right; background: #2196F3; color: white; padding: 4px 10px; border-radius: 12px; font-size: 14px; font-weight: bold;}
+        .dettaglio-casse { font-size: 14px; color: #555; display: block; margin-top: 5px; }
+
+        /* Indicatore Real-Time */
+        .live-indicator { font-size: 12px; color: #4CAF50; float: right; font-weight: bold; margin-top: 5px; }
+        .live-indicator::before { content: "● "; animation: blink 1.5s infinite; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+
+        #scontrino-stampa { display: none; }
+        @media print {
+            body * { visibility: hidden; }
+            #scontrino-stampa, #scontrino-stampa * { visibility: visible; }
+            #scontrino-stampa { display: block; position: absolute; top: 0; left: 0; width: 58mm; font-family: monospace; font-size: 12px; color: black; padding: 5px; }
+        }
+    </style>
+</head>
+<body>
+
+    <h2 style="text-align: center; color: #d32f2f; margin-bottom: 25px;">OPERAZIONI PIAZZALE</h2>
+
+    <!-- SEZIONE 1: CARICO -->
+    <div class="card card-carico">
+        <h3>1. Accettazione Olive (Carico Casse)</h3>
+        <input type="text" id="input-cliente" list="lista-clienti" placeholder="Cerca o scrivi nome cliente...">
+        <datalist id="lista-clienti"></datalist>
+        <button id="btn-attiva-scan" class="btn-scan" style="margin-top: 12px;">📷 Attiva Fotocamera</button>
+        <div id="reader"></div>
+        <input type="text" id="input-cassa" placeholder="Es: C-01, C-02...">
+        <button id="btn-conferma" style="font-size: 20px; padding: 16px;">💾 Conferma Deposito e Stampa</button>
+    </div>
+
+    <!-- SEZIONE 2: PRESTITO -->
+    <div class="card card-prestito">
+        <h3>2. Prestito Casse Vuote (Uscita)</h3>
+        <input type="text" id="prestito-cliente" list="lista-clienti" placeholder="Nome cliente / Azienda...">
+        <button id="btn-attiva-scan-prestito" class="btn-scan" style="margin-top: 12px; background-color: #009688;">📷 Attiva Fotocamera Prestiti</button>
+        <div id="reader-prestito"></div>
+        <textarea id="prestito-codici" rows="2" placeholder="Codici casse prestate"></textarea>
+        <button id="btn-conferma-prestito" class="btn-prestito">🤝 Registra Prestito e Stampa</button>
+    </div>
+
+    <!-- SEZIONE 3: RIENTRO CASSE -->
+    <div class="card card-rientro">
+        <h3>3. Restituzione Casse (Rientro)</h3>
+        <input type="text" id="rientro-cliente" list="lista-clienti" placeholder="Chi restituisce le casse?">
+        <button id="btn-attiva-scan-rientro" class="btn-scan" style="margin-top: 12px; background-color: #9C27B0;">📷 Attiva Fotocamera Rientri</button>
+        <div id="reader-rientro"></div>
+        <textarea id="rientro-codici" rows="2" placeholder="Codici casse che stanno rientrando (lascia vuoto per Rientro Totale)" style="resize: vertical;"></textarea>
+        
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+            <button id="btn-conferma-rientro" class="btn-rientro" style="flex: 1; font-size: 15px;">📥 Parziale (Usa Scanner)</button>
+            <button id="btn-conferma-rientro-totale" class="btn-scan" style="flex: 1; background-color: #4CAF50; font-size: 15px;">✅ TOTALE (Senza Codici)</button>
+        </div>
+    </div>
+
+    <!-- 4. RIEPILOGO PIAZZALE -->
+    <h2 style="text-align: center; color: #333;">Riepilogo Piazzale & Prestiti</h2>
+    <div class="card card-riepilogo">
+        <h3>Casse Olive in attesa <span class="live-indicator">LIVE</span></h3>
+        <div id="contenitore-riepilogo">
+            <p style="color: #666; text-align: center;">In attesa di dati...</p>
+        </div>
+    </div>
+
+    <!-- 5. RIEPILOGO PRESTITI -->
+    <div class="card card-prestito">
+        <h3>Casse Prestate ai Clienti <span class="live-indicator">LIVE</span></h3>
+        <div id="contenitore-riepilogo-prestiti">
+            <p style="color: #666; text-align: center;">In attesa di dati...</p>
+        </div>
+    </div>
+
+    <!-- 6. MOLITURA / LAVORAZIONE -->
+    <h2 style="text-align: center; color: #333;">Lavorazione</h2>
+    <div class="card card-molitura">
+        <h3>4. Molitura e Svuotamento Casse</h3>
+        <input type="text" id="input-molitura-cliente" list="lista-partite-aperte" placeholder="🔍 Cerca cliente con casse in attesa...">
+        <datalist id="lista-partite-aperte"></datalist>
+        <input type="number" id="input-peso" placeholder="Peso totale olive (Kg)">
+        <button id="btn-chiudi-molitura" class="btn-chiudi">Chiudi Molitura e Libera Casse</button>
+    </div>
+
+    <!-- SCONTRINO DINAMICO -->
+    <div id="scontrino-stampa">
+        <div style="text-align: center; font-weight: bold; font-size: 14px;">FRANTOIO CRISCIMANNA</div>
+        <div id="print-titolo" style="text-align: center; margin-bottom: 10px;">Ricevuta Deposito Olive</div>
+        <div id="print-data">Data: </div>
+        <div id="print-cliente" style="font-weight: bold; margin-top: 5px;">Cliente: </div>
+        <hr style="border: 1px dashed black; margin: 5px 0;">
+        <div id="print-totale-casse" style="font-weight: bold;">Totale Casse: 0</div>
+        <div style="margin-top: 5px;">Codici Casse:</div>
+        <div id="print-codici" style="word-break: break-all; margin-top: 3px;">-</div>
+        <hr style="border: 1px dashed black; margin: 5px 0;">
+        <div style="text-align: center; font-size: 10px; margin-top: 10px;">Grazie per la preferenza!</div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
+        import { getFirestore, collection, getDocs, addDoc, doc, getDoc, setDoc, updateDoc, deleteDoc, writeBatch, query, where, serverTimestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDZVN1cERAIIiB7igO25b9Mrk_rpQi2qmg",
+            authDomain: "frantoiocriscimanna-9e4df.firebaseapp.com",
+            projectId: "frantoiocriscimanna-9e4df",
+            storageBucket: "frantoiocriscimanna-9e4df.firebasestorage.app",
+            messagingSenderId: "2790162303",
+            appId: "1:2790162303:web:d20f046315e04a7fbaa44a"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        function riproduciBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain); gain.connect(ctx.destination);
+                osc.type = 'sine'; osc.frequency.value = 1000; gain.gain.value = 0.1;
+                osc.start(); osc.stop(ctx.currentTime + 0.15);
+            } catch(e) {}
+        }
+
+        const inputCliente = document.getElementById('input-cliente');
+        const inputCassa = document.getElementById('input-cassa');
+        const btnConferma = document.getElementById('btn-conferma');
+        const btnAttivaScan = document.getElementById('btn-attiva-scan');
+
+        const prestitoCliente = document.getElementById('prestito-cliente');
+        const prestitoCodici = document.getElementById('prestito-codici');
+        const btnConfermaPrestito = document.getElementById('btn-conferma-prestito');
+        const btnAttivaScanPrestito = document.getElementById('btn-attiva-scan-prestito');
+
+        const rientroCliente = document.getElementById('rientro-cliente');
+        const rientroCodici = document.getElementById('rientro-codici');
+        const btnConfermaRientro = document.getElementById('btn-conferma-rientro');
+        const btnConfermaRientroTotale = document.getElementById('btn-conferma-rientro-totale');
+        const btnAttivaScanRientro = document.getElementById('btn-attiva-scan-rientro');
+
+        const inputMolituraCliente = document.getElementById('input-molitura-cliente');
+        const inputPeso = document.getElementById('input-peso');
+        const btnChiudiMolitura = document.getElementById('btn-chiudi-molitura');
+
+        let html5QrcodeScanner, html5QrcodeScannerPrestito, html5QrcodeScannerRientro;
+        
+        // CACHE GLOBALI PER REAL-TIME
+        let mappaClienti = {};
+        let clientiCache = {};
+        let mappaPartiteAperte = {};
+        let partiteAperteData = [];
+        let prestitiData = [];
+
+        // --- 1. ASCOLTATORI IN TEMPO REALE (REAL-TIME SNAPSHOTS) ---
+        onSnapshot(collection(db, "clienti"), (snap) => {
+            const listaClientiDatalist = document.getElementById('lista-clienti');
+            if(listaClientiDatalist) listaClientiDatalist.innerHTML = '';
+            mappaClienti = {}; clientiCache = {};
+
+            snap.forEach((docSnap) => {
+                const dati = docSnap.data();
+                const nome = dati.nome || "";
+                const id = docSnap.id;
+                mappaClienti[nome.toLowerCase().trim()] = id;
+                clientiCache[id] = dati;
+                
+                if(listaClientiDatalist) {
+                    const option = document.createElement("option"); option.value = nome; listaClientiDatalist.appendChild(option);
+                }
+            });
+            renderRiepilogoPiazzale();
+        });
+
+        onSnapshot(query(collection(db, "partite"), where("stato", "==", "aperta")), (snap) => {
+            partiteAperteData = [];
+            snap.forEach(docSnap => partiteAperteData.push({ id: docSnap.id, ...docSnap.data() }));
+            renderRiepilogoPiazzale();
+        });
+
+        onSnapshot(collection(db, "prestiti"), (snap) => {
+            prestitiData = [];
+            snap.forEach(docSnap => prestitiData.push({ id: docSnap.id, ...docSnap.data() }));
+            renderRiepilogoPrestiti();
+        });
+
+        // --- 2. FUNZIONI DI RENDER VISIVO ---
+        function renderRiepilogoPiazzale() {
+            const contenitore = document.getElementById('contenitore-riepilogo');
+            const listaPartiteAperteDatalist = document.getElementById('lista-partite-aperte');
+            if(!contenitore) return;
+
+            if(listaPartiteAperteDatalist) listaPartiteAperteDatalist.innerHTML = ''; 
+            mappaPartiteAperte = {};
+
+            if (partiteAperteData.length === 0) {
+                contenitore.innerHTML = '<p style="color: #666; text-align: center;">Nessuna cassa in attesa nel piazzale.</p>';
+                return;
+            }
+
+            let html = '';
+            partiteAperteData.forEach(dp => {
+                let nc = dp.id_cliente; let tc = "";
+                if (clientiCache[dp.id_cliente]) {
+                    nc = clientiCache[dp.id_cliente].nome;
+                    tc = clientiCache[dp.id_cliente].telefono ? `(Tel: ${clientiCache[dp.id_cliente].telefono})` : "";
+                }
+                
+                mappaPartiteAperte[nc.toLowerCase().trim()] = dp.id;
+                if(listaPartiteAperteDatalist) {
+                    const opt = document.createElement("option"); opt.value = nc; listaPartiteAperteDatalist.appendChild(opt);
+                }
+
+                if (dp.codici_casse && dp.codici_casse.length > 0) {
+                    html += `<div class="riga-cliente"><strong>${nc}</strong> ${tc} <span class="badge-casse">${dp.codici_casse.length} casse</span>
+                        <span class="dettaglio-casse">Codici: ${dp.codici_casse.join(', ')}</span>
+                        <button onclick="window.eliminaPartita('${dp.id}')" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; margin-top:6px; cursor:pointer;">🗑️ Annulla Partita</button></div>`;
+                }
+            });
+            contenitore.innerHTML = html !== '' ? html : '<p style="color: #666; text-align: center;">Nessuna cassa in attesa nel piazzale.</p>';
+        }
+
+        function renderRiepilogoPrestiti() {
+            const contenitore = document.getElementById('contenitore-riepilogo-prestiti');
+            if (!contenitore) return;
+
+            let prestitiAttivi = prestitiData.filter(p => p.tipo === "prestito");
+            if (prestitiAttivi.length === 0) {
+                contenitore.innerHTML = '<p style="color: #666; text-align: center;">Nessun prestito da restituire.</p>'; return;
+            }
+
+            let lista = prestitiAttivi.map(d => {
+                let timestamp = d.data_prestito && d.data_prestito.toDate ? d.data_prestito.toDate().getTime() : 0;
+                let dataStr = d.data_prestito && d.data_prestito.toDate ? d.data_prestito.toDate().toLocaleString('it-IT') : 'Data non disp.';
+                return { id: d.id, cliente: d.cliente || 'Sconosciuto', codici: d.codici || [], numCasse: d.numero_totale_casse || (d.codici || []).length, data: dataStr, timestamp: timestamp };
+            });
+
+            lista.sort((a, b) => b.timestamp - a.timestamp);
+            let html = '';
+            lista.forEach(p => {
+                const clienteEscaped = p.cliente.replace(/'/g, "\\'");
+                const codiciEscaped = p.codici.join(', ').replace(/'/g, "\\'");
+                html += `<div class="riga-cliente">
+                        <strong>${p.cliente}</strong>
+                        <span class="badge-casse" style="background:#009688;">${p.numCasse} casse</span>
+                        <span class="dettaglio-casse">Codici: ${p.codici.join(', ')}</span>
+                        <small style="color:#777;">In prestito dal: ${p.data}</small><br>
+                        <div style="margin-top:6px;">
+                            <button onclick="window.modificaPrestitoRiepilogo('${p.id}', '${clienteEscaped}', '${codiciEscaped}')" style="background:#ff9800; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer;" title="Modifica prestito">✏️ Modifica</button>
+                            <button onclick="window.eliminaPrestitoRiepilogo('${p.id}', '${clienteEscaped}')" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; margin-left:4px; cursor:pointer;" title="Elimina prestito">🗑️ Elimina</button>
+                        </div></div>`;
+            });
+            contenitore.innerHTML = html;
+        }
+
+
+        // --- 3. AZIONI OPERATIVE (Carico, Prestiti, Rientri) ---
+
+        // SCANNER
+        btnAttivaScan.addEventListener('click', () => { document.getElementById('reader').style.display = 'block'; if (html5QrcodeScanner) try { html5QrcodeScanner.clear(); } catch(e){} html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: {width: 250, height: 250} }, false); html5QrcodeScanner.render((t) => { const a = inputCassa.value.trim(); const c = a.split(/[\s,]+/).filter(x => x.length > 0); if (!c.includes(t)) { inputCassa.value = a ? `${a}, ${t}` : t; riproduciBeep(); } }, () => {}); });
+        btnAttivaScanPrestito.addEventListener('click', () => { document.getElementById('reader-prestito').style.display = 'block'; if (html5QrcodeScannerPrestito) try { html5QrcodeScannerPrestito.clear(); } catch(e){} html5QrcodeScannerPrestito = new Html5QrcodeScanner("reader-prestito", { fps: 10, qrbox: {width: 250, height: 250} }, false); html5QrcodeScannerPrestito.render((t) => { const a = prestitoCodici.value.trim(); const c = a.split(/[\s,]+/).filter(x => x.length > 0); if (!c.includes(t)) { prestitoCodici.value = a ? `${a}, ${t}` : t; riproduciBeep(); } }, () => {}); });
+        btnAttivaScanRientro.addEventListener('click', () => { document.getElementById('reader-rientro').style.display = 'block'; if (html5QrcodeScannerRientro) try { html5QrcodeScannerRientro.clear(); } catch(e){} html5QrcodeScannerRientro = new Html5QrcodeScanner("reader-rientro", { fps: 10, qrbox: {width: 250, height: 250} }, false); html5QrcodeScannerRientro.render((t) => { const a = rientroCodici.value.trim(); const c = a.split(/[\s,]+/).filter(x => x.length > 0); if (!c.includes(t)) { rientroCodici.value = a ? `${a}, ${t}` : t; riproduciBeep(); } }, () => {}); });
+
+        // DEPOSITO
+        btnConferma.addEventListener('click', async () => {
+            const nomeDigitato = inputCliente.value.trim();
+            const rawCasse = inputCassa.value.trim();
+            if (!nomeDigitato || !rawCasse) { alert("Dati mancanti!"); return; }
+
+            const codiciCasseNuovi = rawCasse.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+            btnConferma.disabled = true;
+
+            try {
+                let idCliente = mappaClienti[nomeDigitato.toLowerCase()] || doc(collection(db, "clienti")).id;
+                if (!mappaClienti[nomeDigitato.toLowerCase()]) await setDoc(doc(db, "clienti", idCliente), { nome: nomeDigitato });
+
+                const qPartita = query(collection(db, "partite"), where("id_cliente", "==", idCliente), where("stato", "==", "aperta"));
+                const partiteSnapshot = await getDocs(qPartita);
+
+                let partitaRef; let codiciEsistenti = [];
+                if (partiteSnapshot.empty) { partitaRef = doc(collection(db, "partite")); } 
+                else { partitaRef = doc(db, "partite", partiteSnapshot.docs[0].id); codiciEsistenti = partiteSnapshot.docs[0].data().codici_casse || []; }
+
+                const tuttiCodici = Array.from(new Set([...codiciEsistenti, ...codiciCasseNuovi]));
+                const batch = writeBatch(db);
+
+                if (partiteSnapshot.empty) batch.set(partitaRef, { id_cliente: idCliente, stato: "aperta", data_apertura: new Date(), codici_casse: tuttiCodici });
+                else batch.update(partitaRef, { codici_casse: tuttiCodici });
+
+                for (const idCassa of codiciCasseNuovi) {
+                    batch.set(doc(db, "casse", idCassa), { stato: "occupata", id_cliente_attuale: idCliente, id_partita_attuale: partitaRef.id }, { merge: true });
+                    batch.set(doc(collection(db, "depositi")), { id_partita: partitaRef.id, id_cliente: idCliente, id_cassa: idCassa, data_scarico: new Date() });
+                }
+
+                await batch.commit();
+                
+                document.getElementById('print-titolo').innerText = "RICEVUTA DEPOSITO OLIVE";
+                document.getElementById('print-data').innerText = `Data: ${new Date().toLocaleString('it-IT')}`;
+                document.getElementById('print-cliente').innerText = `Cliente: ${nomeDigitato}`;
+                document.getElementById('print-totale-casse').innerText = `Totale Casse: ${tuttiCodici.length}`;
+                document.getElementById('print-codici').innerText = tuttiCodici.join(', ');
+                window.print();
+
+                try { if(html5QrcodeScanner) html5QrcodeScanner.clear(); document.getElementById('reader').style.display='none'; } catch(e){}
+                inputCassa.value = ''; inputCassa.focus();
+            } catch (error) { console.error(error); alert("Errore"); }
+            btnConferma.disabled = false;
+        });
+
+        // PRESTITO
+        btnConfermaPrestito.addEventListener('click', async () => {
+            const nomeCliente = prestitoCliente.value.trim();
+            const rawCodici = prestitoCodici.value.trim();
+            if (!nomeCliente || !rawCodici) { alert("Compila tutti i campi!"); return; }
+
+            const codiciPrestrati = rawCodici.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+            btnConfermaPrestito.disabled = true;
+
+            try {
+                await addDoc(collection(db, "prestiti"), { tipo: "prestito", cliente: nomeCliente, numero_totale_casse: codiciPrestrati.length, codici: codiciPrestrati, data_prestito: serverTimestamp() });
+                
+                document.getElementById('print-titolo').innerText = "RICEVUTA PRESTITO CASSE";
+                document.getElementById('print-data').innerText = `Data: ${new Date().toLocaleString('it-IT')}`;
+                document.getElementById('print-cliente').innerText = `Cliente: ${nomeCliente}`;
+                document.getElementById('print-totale-casse').innerText = `Totale Casse Prestate: ${codiciPrestrati.length}`;
+                document.getElementById('print-codici').innerText = codiciPrestrati.join(', ');
+                window.print();
+
+                try { if(html5QrcodeScannerPrestito) html5QrcodeScannerPrestito.clear(); document.getElementById('reader-prestito').style.display='none'; } catch(e){}
+                prestitoCliente.value = ''; prestitoCodici.value = '';
+            } catch (error) { console.error(error); }
+            btnConfermaPrestito.disabled = false;
+        });
+
+        // RIENTRO FOTOCAMERA
+        btnConfermaRientro.addEventListener('click', async () => {
+            const nomeCliente = rientroCliente.value.trim();
+            const rawCodici = rientroCodici.value.trim();
+            if (!nomeCliente || !rawCodici) { alert("Inserisci Cliente e Codici da restituire!"); return; }
+
+            const codiciRientrati = rawCodici.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+            btnConfermaRientro.disabled = true;
+
+            try {
+                const q = query(collection(db, "prestiti"), where("cliente", "==", nomeCliente), where("tipo", "==", "prestito"));
+                const snap = await getDocs(q);
+                if (snap.empty) { alert(`Nessun prestito attivo trovato per il cliente ${nomeCliente}.`); btnConfermaRientro.disabled = false; return; }
+
+                let allActiveDocs = []; snap.forEach(d => allActiveDocs.push({id: d.id, codici: d.data().codici || []}));
+                let codiciRimastiDaElaborare = [...codiciRientrati]; let rientratiEffettivi = [];
+                const batch = writeBatch(db); let changesMade = false;
+
+                for (let docObj of allActiveDocs) {
+                    let docCodici = [...docObj.codici]; let modified = false;
+                    for (let i = codiciRimastiDaElaborare.length - 1; i >= 0; i--) {
+                        const cod = codiciRimastiDaElaborare[i];
+                        const idx = docCodici.indexOf(cod);
+                        if (idx !== -1) { docCodici.splice(idx, 1); codiciRimastiDaElaborare.splice(i, 1); rientratiEffettivi.push(cod); modified = true; }
+                    }
+                    if (modified) {
+                        changesMade = true;
+                        if (docCodici.length === 0) batch.delete(doc(db, "prestiti", docObj.id)); 
+                        else batch.update(doc(db, "prestiti", docObj.id), { codici: docCodici, numero_totale_casse: docCodici.length });
+                    }
+                }
+
+                if (!changesMade) { alert("Nessun codice inserito corrisponde alle casse prestate a questo cliente!"); btnConfermaRientro.disabled = false; return; }
+
+                batch.set(doc(collection(db, "prestiti")), { tipo: "rientro", cliente: nomeCliente, numero_totale_casse: rientratiEffettivi.length, codici: rientratiEffettivi, data_prestito: serverTimestamp() });
+                await batch.commit();
+
+                document.getElementById('print-titolo').innerText = "RICEVUTA RESTITUZIONE CASSE";
+                document.getElementById('print-data').innerText = `Data: ${new Date().toLocaleString('it-IT')}`;
+                document.getElementById('print-cliente').innerText = `Cliente: ${nomeCliente}`;
+                document.getElementById('print-totale-casse').innerText = `Totale Casse Restituite: ${rientratiEffettivi.length}`;
+                document.getElementById('print-codici').innerText = rientratiEffettivi.join(', ');
+                window.print();
+
+                if (codiciRimastiDaElaborare.length > 0) alert(`Rientro registrato! \nATTENZIONE: le seguenti casse NON risultavano in prestito e sono state ignorate: ${codiciRimastiDaElaborare.join(', ')}`);
+                try { if(html5QrcodeScannerRientro) html5QrcodeScannerRientro.clear(); document.getElementById('reader-rientro').style.display='none'; } catch(e){}
+                rientroCliente.value = ''; rientroCodici.value = '';
+            } catch (error) { console.error(error); alert("Errore nel rientro."); }
+            btnConfermaRientro.disabled = false;
+        });
+
+        // RIENTRO TOTALE (SENZA CODICI)
+        btnConfermaRientroTotale.addEventListener('click', async () => {
+            const nomeCliente = rientroCliente.value.trim();
+            if (!nomeCliente) { alert("Inserisci il nome del Cliente per il rientro totale!"); return; }
+            if (!confirm(`Sei sicuro di voler registrare il rientro TOTALE di TUTTE le casse in prestito a ${nomeCliente}?`)) return;
+            btnConfermaRientroTotale.disabled = true;
+
+            try {
+                const q = query(collection(db, "prestiti"), where("cliente", "==", nomeCliente), where("tipo", "==", "prestito"));
+                const snap = await getDocs(q);
+                if (snap.empty) { alert(`Nessun prestito attivo trovato per il cliente ${nomeCliente}.`); btnConfermaRientroTotale.disabled = false; return; }
+
+                let totaleRientrate = 0; let codiciRientratiAll = []; const batch = writeBatch(db);
+                snap.forEach(d => {
+                    const codici = d.data().codici || []; totaleRientrate += codici.length; codiciRientratiAll.push(...codici);
+                    batch.delete(doc(db, "prestiti", d.id));
+                });
+                batch.set(doc(collection(db, "prestiti")), { tipo: "rientro", cliente: nomeCliente, numero_totale_casse: totaleRientrate, codici: codiciRientratiAll, data_prestito: serverTimestamp() });
+                await batch.commit();
+
+                document.getElementById('print-titolo').innerText = "RICEVUTA RESTITUZIONE CASSE";
+                document.getElementById('print-data').innerText = `Data: ${new Date().toLocaleString('it-IT')}`;
+                document.getElementById('print-cliente').innerText = `Cliente: ${nomeCliente}`;
+                document.getElementById('print-totale-casse').innerText = `Totale Casse Restituite: ${totaleRientrate}`;
+                document.getElementById('print-codici').innerText = codiciRientratiAll.join(', ');
+                window.print();
+                
+                try { if(html5QrcodeScannerRientro) html5QrcodeScannerRientro.clear(); document.getElementById('reader-rientro').style.display='none'; } catch(e){}
+                rientroCliente.value = ''; rientroCodici.value = ''; 
+            } catch (error) { console.error(error); alert("Errore nel rientro totale."); }
+            btnConfermaRientroTotale.disabled = false;
+        });
+
+        // --- 4. FUNZIONI SECONDARIE ---
+
+        window.eliminaPartita = async (idPartita) => {
+            if (!confirm("Sicuro di voler annullare questa partita? Le casse torneranno libere.")) return;
+            const batch = writeBatch(db);
+            const qCasse = await getDocs(query(collection(db, "casse"), where("id_partita_attuale", "==", idPartita)));
+            qCasse.forEach(c => batch.update(doc(db, "casse", c.id), { stato: "libera", id_cliente_attuale: null, id_partita_attuale: null }));
+            const qDep = await getDocs(query(collection(db, "depositi"), where("id_partita", "==", idPartita)));
+            qDep.forEach(d => batch.delete(doc(db, "depositi", d.id)));
+            batch.delete(doc(db, "partite", idPartita));
+            await batch.commit();
+        };
+
+        window.modificaPrestitoRiepilogo = async (id, currentClient, currentCodiciStr) => {
+            const nuovoCliente = prompt("Modifica Nome Cliente:", currentClient); if (nuovoCliente === null) return;
+            const codiciPrompt = prompt("Modifica i codici delle casse prestate:", currentCodiciStr); if (codiciPrompt === null) return;
+            const nuoviCodici = codiciPrompt.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+            if (nuoviCodici.length === 0) return;
+            try { await updateDoc(doc(db, "prestiti", id), { cliente: nuovoCliente.trim(), codici: nuoviCodici, numero_totale_casse: nuoviCodici.length }); } catch (error) {}
+        };
+
+        window.eliminaPrestitoRiepilogo = async (id, nomeCliente) => {
+            if (!confirm(`Eliminare il prestito di "${nomeCliente}"?`)) return;
+            try { await deleteDoc(doc(db, "prestiti", id)); } catch (error) {}
+        };
+
+        if (btnChiudiMolitura) {
+            btnChiudiMolitura.addEventListener('click', async () => {
+                const idPartita = mappaPartiteAperte[inputMolituraCliente.value.trim().toLowerCase()];
+                const peso = parseFloat(inputPeso.value);
+                if (!idPartita || !peso) { alert("Dati non validi!"); return; }
+                const batch = writeBatch(db);
+                const pd = (await getDoc(doc(db, "partite", idPartita))).data();
+                pd.codici_casse.forEach(c => batch.update(doc(db, "casse", c), { stato: "libera", id_cliente_attuale: null, id_partita_attuale: null }));
+                batch.update(doc(db, "partite", idPartita), { stato: "molita" });
+                batch.set(doc(collection(db, "moliture")), { tipo: "deposito", id_partita: idPartita, id_cliente: pd.id_cliente, peso_totale_kg: peso, data_molitura: new Date(), codici_casse: pd.codici_casse, numero_casse: pd.codici_casse.length });
+                await batch.commit(); inputPeso.value = ''; inputMolituraCliente.value = ''; 
+            });
+        }
+    </script>
+</body>
+</html>
