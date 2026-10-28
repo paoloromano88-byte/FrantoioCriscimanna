@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Frantoio - Gestionale Completo e Storico</title>
     <link rel="icon" href="data:,">
-    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <style>
         body { font-family: sans-serif; padding: 20px; max-width: 750px; margin: auto; background-color: #f4f4f9;}
         .card { background-color: white; border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);}
@@ -205,6 +205,12 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
+        // Protegge i testi inseriti (nomi, note, codici) quando vengono inseriti nell'HTML
+        const esc = (s) => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+        // Prepara un valore da passare a una funzione dentro onclick="..." (gestisce apostrofi e virgolette)
+        const arg = (v) => esc(JSON.stringify(v ?? ''));
+        const parseCodici = (testo) => String(testo || '').split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+
         function riproduciBeep() {
             try {
                 const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -212,8 +218,17 @@
                 const gain = ctx.createGain();
                 osc.connect(gain); gain.connect(ctx.destination);
                 osc.type = 'sine'; osc.frequency.value = 1000; gain.gain.value = 0.1;
+                osc.onended = () => ctx.close();
                 osc.start(); osc.stop(ctx.currentTime + 0.15);
             } catch(e) {}
+        }
+
+        function erroreDatabase(error) {
+            console.error("Errore database:", error);
+            ['contenitore-riepilogo', 'contenitore-riepilogo-prestiti', 'contenitore-storico', 'contenitore-lista-clienti'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.innerHTML = '<p style="color: #d32f2f; text-align: center;">⚠️ Errore di collegamento al database. Controlla la connessione internet o le regole di sicurezza di Firestore.</p>';
+            });
         }
 
         const inputCliente = document.getElementById('input-cliente');
@@ -277,26 +292,26 @@
             mostraListaAnagrafica(listaClientiCache);
             renderRiepilogoPiazzale();
             renderStorico();
-        });
+        }, erroreDatabase);
 
         onSnapshot(query(collection(db, "partite"), where("stato", "==", "aperta")), (snap) => {
             partiteAperteData = [];
             snap.forEach(docSnap => partiteAperteData.push({ id: docSnap.id, ...docSnap.data() }));
             renderRiepilogoPiazzale();
-        });
+        }, erroreDatabase);
 
         onSnapshot(collection(db, "prestiti"), (snap) => {
             prestitiData = [];
-            snap.forEach(docSnap => prestitiData.push({ id: docSnap.id, ...docSnap.data() }));
+            snap.forEach(docSnap => prestitiData.push({ id: docSnap.id, ...docSnap.data({ serverTimestamps: "estimate" }) }));
             renderRiepilogoPrestiti();
             renderStorico();
-        });
+        }, erroreDatabase);
 
         onSnapshot(collection(db, "moliture"), (snap) => {
             molitureData = [];
             snap.forEach(docSnap => molitureData.push({ id: docSnap.id, ...docSnap.data() }));
             renderStorico();
-        });
+        }, erroreDatabase);
 
         // --- 2. FUNZIONI DI RENDER VISIVO ---
 
@@ -315,21 +330,21 @@
 
             let html = '';
             partiteAperteData.forEach(dp => {
-                let nc = dp.id_cliente; let tc = "";
+                let nc = dp.id_cliente || "Sconosciuto"; let tc = "";
                 if (clientiCache[dp.id_cliente]) {
-                    nc = clientiCache[dp.id_cliente].nome;
+                    nc = clientiCache[dp.id_cliente].nome || nc;
                     tc = clientiCache[dp.id_cliente].telefono ? `(Tel: ${clientiCache[dp.id_cliente].telefono})` : "";
                 }
-                
+
                 mappaPartiteAperte[nc.toLowerCase().trim()] = dp.id;
                 if(listaPartiteAperteDatalist) {
                     const opt = document.createElement("option"); opt.value = nc; listaPartiteAperteDatalist.appendChild(opt);
                 }
 
                 if (dp.codici_casse && dp.codici_casse.length > 0) {
-                    html += `<div class="riga-cliente"><strong>${nc}</strong> ${tc} <span class="badge-casse">${dp.codici_casse.length} casse</span>
-                        <span class="dettaglio-casse">Codici: ${dp.codici_casse.join(', ')}</span>
-                        <button onclick="window.eliminaPartita('${dp.id}')" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; margin-top:6px; cursor:pointer;">🗑️ Annulla Partita</button></div>`;
+                    html += `<div class="riga-cliente"><strong>${esc(nc)}</strong> ${esc(tc)} <span class="badge-casse">${dp.codici_casse.length} casse</span>
+                        <span class="dettaglio-casse">Codici: ${esc(dp.codici_casse.join(', '))}</span>
+                        <button onclick="window.eliminaPartita(${arg(dp.id)})" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; margin-top:6px; cursor:pointer;">🗑️ Annulla Partita</button></div>`;
                 }
             });
             contenitore.innerHTML = html !== '' ? html : '<p style="color: #666; text-align: center;">Nessuna cassa in attesa nel piazzale.</p>';
@@ -353,18 +368,19 @@
             lista.sort((a, b) => b.timestamp - a.timestamp);
             let html = '';
             lista.forEach(p => {
-                const clienteEscaped = p.cliente.replace(/'/g, "\\'");
-                const codiciEscaped = p.codici.join(', ').replace(/'/g, "\\'");
+                const idArg = arg(p.id);
+                const clienteArg = arg(p.cliente);
+                const codiciArg = arg(p.codici.join(', '));
                 html += `<div class="riga-cliente">
-                        <strong>${p.cliente}</strong>
+                        <strong>${esc(p.cliente)}</strong>
                         <span class="badge-casse" style="background:#009688;">${p.numCasse} casse</span>
-                        <span class="dettaglio-casse">Codici: ${p.codici.join(', ')}</span>
+                        <span class="dettaglio-casse">Codici: ${esc(p.codici.join(', '))}</span>
                         <small style="color:#777;">In prestito dal: ${p.data}</small><br>
                         <div style="margin-top:6px;">
-                            <button onclick="window.registraRientroManuale('${p.id}', '${clienteEscaped}', '${codiciEscaped}')" style="background:#9C27B0; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer;" title="Registra rientro parziale">📥 Parziale</button>
-                            <button onclick="window.registraRientroTotaleLista('${p.id}', '${clienteEscaped}', '${codiciEscaped}')" style="background:#4CAF50; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer; margin-left:4px;" title="Registra rientro di TUTTE le casse">✅ Totale</button>
-                            <button onclick="window.modificaPrestitoRiepilogo('${p.id}', '${clienteEscaped}', '${codiciEscaped}')" style="background:#ff9800; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer; margin-left:4px;" title="Modifica prestito">✏️ Modifica</button>
-                            <button onclick="window.eliminaPrestitoRiepilogo('${p.id}', '${clienteEscaped}')" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; margin-left:4px; cursor:pointer;" title="Elimina prestito">🗑️ Elimina</button>
+                            <button onclick="window.registraRientroManuale(${idArg}, ${clienteArg}, ${codiciArg})" style="background:#9C27B0; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer;" title="Registra rientro parziale">📥 Parziale</button>
+                            <button onclick="window.registraRientroTotaleLista(${idArg}, ${clienteArg}, ${codiciArg})" style="background:#4CAF50; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer; margin-left:4px;" title="Registra rientro di TUTTE le casse">✅ Totale</button>
+                            <button onclick="window.modificaPrestitoRiepilogo(${idArg}, ${clienteArg}, ${codiciArg})" style="background:#ff9800; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer; margin-left:4px;" title="Modifica prestito">✏️ Modifica</button>
+                            <button onclick="window.eliminaPrestitoRiepilogo(${idArg}, ${clienteArg})" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:4px; font-size:11px; margin-left:4px; cursor:pointer;" title="Elimina prestito">🗑️ Elimina</button>
                         </div></div>`;
             });
             contenitore.innerHTML = html;
@@ -376,21 +392,22 @@
 
             storicoCache = [];
             molitureData.forEach(dt => {
-                let cl = dt.id_cliente;
+                let cl = dt.id_cliente || "Sconosciuto";
                 if (clientiCache[dt.id_cliente]) cl = clientiCache[dt.id_cliente].nome;
+                else if (dt.cliente) cl = dt.cliente;
                 else if (dt.id_partita) cl = "Cliente (da partita)";
 
                 let codici = dt.codici_casse || [];
                 let timestamp = dt.data_molitura && dt.data_molitura.toDate ? dt.data_molitura.toDate().getTime() : 0;
                 let dataStr = dt.data_molitura && dt.data_molitura.toDate ? dt.data_molitura.toDate().toLocaleString('it-IT') : 'Data non disp.';
-                storicoCache.push({ id: dt.id, timestamp: timestamp, data: dataStr, tipo: "deposito", cliente: cl, idCliente: dt.id_cliente, kg: dt.peso_totale_kg, codici: codici.join(', '), numCasse: codici.length });
+                storicoCache.push({ id: dt.id, timestamp: timestamp, data: dataStr, tipo: "deposito", cliente: cl, idCliente: dt.id_cliente, kg: dt.peso_totale_kg || 0, codici: codici.join(', '), numCasse: codici.length });
             });
 
             prestitiData.forEach(dt => {
                 let codici = dt.codici || [];
                 let timestamp = dt.data_prestito && dt.data_prestito.toDate ? dt.data_prestito.toDate().getTime() : 0;
                 let dataStr = dt.data_prestito && dt.data_prestito.toDate ? dt.data_prestito.toDate().toLocaleString('it-IT') : 'Data non disp.';
-                storicoCache.push({ id: dt.id, timestamp: timestamp, data: dataStr, tipo: dt.tipo || "prestito", cliente: dt.cliente, kg: 0, codici: codici.join(', '), numCasse: dt.numero_totale_casse || codici.length });
+                storicoCache.push({ id: dt.id, timestamp: timestamp, data: dataStr, tipo: dt.tipo || "prestito", cliente: dt.cliente || "Sconosciuto", kg: 0, codici: codici.join(', '), numCasse: dt.numero_totale_casse || codici.length });
             });
 
             storicoCache.sort((a, b) => b.timestamp - a.timestamp);
@@ -399,10 +416,26 @@
 
         // --- 3. AZIONI OPERATIVE (Carico, Prestiti, Rientri) ---
 
-        // SCANNER
-        btnAttivaScan.addEventListener('click', () => { document.getElementById('reader').style.display = 'block'; if (html5QrcodeScanner) try { html5QrcodeScanner.clear(); } catch(e){} html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: {width: 250, height: 250} }, false); html5QrcodeScanner.render((t) => { const a = inputCassa.value.trim(); const c = a.split(/[\s,]+/).filter(x => x.length > 0); if (!c.includes(t)) { inputCassa.value = a ? `${a}, ${t}` : t; riproduciBeep(); } }, () => {}); });
-        btnAttivaScanPrestito.addEventListener('click', () => { document.getElementById('reader-prestito').style.display = 'block'; if (html5QrcodeScannerPrestito) try { html5QrcodeScannerPrestito.clear(); } catch(e){} html5QrcodeScannerPrestito = new Html5QrcodeScanner("reader-prestito", { fps: 10, qrbox: {width: 250, height: 250} }, false); html5QrcodeScannerPrestito.render((t) => { const a = prestitoCodici.value.trim(); const c = a.split(/[\s,]+/).filter(x => x.length > 0); if (!c.includes(t)) { prestitoCodici.value = a ? `${a}, ${t}` : t; riproduciBeep(); } }, () => {}); });
-        btnAttivaScanRientro.addEventListener('click', () => { document.getElementById('reader-rientro').style.display = 'block'; if (html5QrcodeScannerRientro) try { html5QrcodeScannerRientro.clear(); } catch(e){} html5QrcodeScannerRientro = new Html5QrcodeScanner("reader-rientro", { fps: 10, qrbox: {width: 250, height: 250} }, false); html5QrcodeScannerRientro.render((t) => { const a = rientroCodici.value.trim(); const c = a.split(/[\s,]+/).filter(x => x.length > 0); if (!c.includes(t)) { rientroCodici.value = a ? `${a}, ${t}` : t; riproduciBeep(); } }, () => {}); });
+        // SCANNER (chiude lo scanner precedente prima di aprirne uno nuovo, così la fotocamera non resta bloccata)
+        function chiudiScanner(scanner, idReader) {
+            if (scanner) Promise.resolve().then(() => scanner.clear()).catch(() => {});
+            document.getElementById(idReader).style.display = 'none';
+        }
+        async function avviaScanner(scannerPrecedente, idReader, campo) {
+            if (scannerPrecedente) await Promise.resolve().then(() => scannerPrecedente.clear()).catch(() => {});
+            document.getElementById(idReader).style.display = 'block';
+            const scanner = new Html5QrcodeScanner(idReader, { fps: 10, qrbox: {width: 250, height: 250} }, false);
+            scanner.render((t) => {
+                const codice = t.trim();
+                const a = campo.value.trim();
+                const c = parseCodici(a);
+                if (codice && !c.includes(codice.toUpperCase())) { campo.value = a ? `${a}, ${codice}` : codice; riproduciBeep(); }
+            }, () => {});
+            return scanner;
+        }
+        btnAttivaScan.addEventListener('click', async () => { html5QrcodeScanner = await avviaScanner(html5QrcodeScanner, 'reader', inputCassa); });
+        btnAttivaScanPrestito.addEventListener('click', async () => { html5QrcodeScannerPrestito = await avviaScanner(html5QrcodeScannerPrestito, 'reader-prestito', prestitoCodici); });
+        btnAttivaScanRientro.addEventListener('click', async () => { html5QrcodeScannerRientro = await avviaScanner(html5QrcodeScannerRientro, 'reader-rientro', rientroCodici); });
 
         // DEPOSITO
         btnConferma.addEventListener('click', async () => {
@@ -411,22 +444,38 @@
             if (!nomeDigitato) { alert("Inserisci il nome del cliente!"); return; }
             if (!rawCasse) { alert("Devi inserire o scansionare almeno una cassa!"); return; }
 
-            const codiciCasseNuovi = rawCasse.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+            const codiciCasseNuovi = Array.from(new Set(parseCodici(rawCasse)));
+            const codiciNonValidi = codiciCasseNuovi.filter(c => c.includes('/'));
+            if (codiciNonValidi.length > 0) { alert(`Codici cassa non validi (non usare il carattere "/"): ${codiciNonValidi.join(', ')}`); return; }
             btnConferma.disabled = true;
 
             try {
-                let idCliente = mappaClienti[nomeDigitato.toLowerCase()] || doc(collection(db, "clienti")).id;
-                if (!mappaClienti[nomeDigitato.toLowerCase()]) await setDoc(doc(db, "clienti", idCliente), { nome: nomeDigitato });
+                const batch = writeBatch(db);
+                let idCliente = mappaClienti[nomeDigitato.toLowerCase()];
+                if (!idCliente) {
+                    const nuovoClienteRef = doc(collection(db, "clienti"));
+                    idCliente = nuovoClienteRef.id;
+                    batch.set(nuovoClienteRef, { nome: nomeDigitato, telefono: "", note: "" });
+                }
 
                 const qPartita = query(collection(db, "partite"), where("id_cliente", "==", idCliente), where("stato", "==", "aperta"));
                 const partiteSnapshot = await getDocs(qPartita);
 
                 let partitaRef; let codiciEsistenti = [];
-                if (partiteSnapshot.empty) { partitaRef = doc(collection(db, "partite")); } 
+                if (partiteSnapshot.empty) { partitaRef = doc(collection(db, "partite")); }
                 else { partitaRef = doc(db, "partite", partiteSnapshot.docs[0].id); codiciEsistenti = partiteSnapshot.docs[0].data().codici_casse || []; }
 
+                // Una cassa già nel piazzale per un ALTRO cliente non può essere registrata di nuovo
+                const casseOccupate = codiciCasseNuovi.map(cod => {
+                    const altra = partiteAperteData.find(p => p.id !== partitaRef.id && (p.codici_casse || []).includes(cod));
+                    return altra ? `${cod} (${(clientiCache[altra.id_cliente] || {}).nome || 'altro cliente'})` : null;
+                }).filter(Boolean);
+                if (casseOccupate.length > 0) {
+                    alert(`Queste casse risultano già OCCUPATE nel piazzale:\n${casseOccupate.join('\n')}\n\nToglile dall'elenco e riprova.`);
+                    btnConferma.disabled = false; return;
+                }
+
                 const tuttiCodici = Array.from(new Set([...codiciEsistenti, ...codiciCasseNuovi]));
-                const batch = writeBatch(db);
 
                 if (partiteSnapshot.empty) batch.set(partitaRef, { id_cliente: idCliente, stato: "aperta", data_apertura: new Date(), codici_casse: tuttiCodici });
                 else batch.update(partitaRef, { codici_casse: tuttiCodici });
@@ -445,8 +494,8 @@
                 document.getElementById('print-codici').innerText = tuttiCodici.join(', ');
                 window.print();
 
-                try { if(html5QrcodeScanner) html5QrcodeScanner.clear(); document.getElementById('reader').style.display='none'; } catch(e){}
-                inputCassa.value = ''; inputCassa.focus(); 
+                chiudiScanner(html5QrcodeScanner, 'reader'); html5QrcodeScanner = null;
+                inputCassa.value = ''; inputCassa.focus();
             } catch (error) { console.error(error); alert("Errore di salvataggio."); }
             btnConferma.disabled = false;
         });
@@ -470,11 +519,18 @@
                 document.getElementById('print-codici').innerText = codiciPrestrati.join(', ');
                 window.print();
 
-                try { if(html5QrcodeScannerPrestito) html5QrcodeScannerPrestito.clear(); document.getElementById('reader-prestito').style.display='none'; } catch(e){}
+                chiudiScanner(html5QrcodeScannerPrestito, 'reader-prestito'); html5QrcodeScannerPrestito = null;
                 prestitoCliente.value = ''; prestitoCodici.value = '';
-            } catch (error) { console.error(error); }
+            } catch (error) { console.error(error); alert("Errore nella registrazione del prestito."); }
             btnConfermaPrestito.disabled = false;
         });
+
+        // Prestiti ancora aperti di un cliente (il nome viene confrontato senza badare a maiuscole/minuscole)
+        async function prestitiAttiviDi(nomeCliente) {
+            const snap = await getDocs(query(collection(db, "prestiti"), where("tipo", "==", "prestito")));
+            const chiave = nomeCliente.toLowerCase().trim();
+            return snap.docs.filter(d => (d.data().cliente || '').toLowerCase().trim() === chiave);
+        }
 
         // RIENTRO FOTOCAMERA
         btnConfermaRientro.addEventListener('click', async () => {
@@ -486,11 +542,10 @@
             btnConfermaRientro.disabled = true;
 
             try {
-                const q = query(collection(db, "prestiti"), where("cliente", "==", nomeCliente), where("tipo", "==", "prestito"));
-                const snap = await getDocs(q);
-                if (snap.empty) { alert(`Nessun prestito attivo trovato per il cliente ${nomeCliente}.`); btnConfermaRientro.disabled = false; return; }
+                const prestitiCliente = await prestitiAttiviDi(nomeCliente);
+                if (prestitiCliente.length === 0) { alert(`Nessun prestito attivo trovato per il cliente ${nomeCliente}.`); btnConfermaRientro.disabled = false; return; }
 
-                let allActiveDocs = []; snap.forEach(d => allActiveDocs.push({id: d.id, codici: d.data().codici || []}));
+                let allActiveDocs = prestitiCliente.map(d => ({id: d.id, codici: d.data().codici || []}));
                 let codiciRimastiDaElaborare = [...codiciRientrati]; let rientratiEffettivi = [];
                 const batch = writeBatch(db); let changesMade = false;
 
@@ -521,7 +576,7 @@
                 window.print();
 
                 if (codiciRimastiDaElaborare.length > 0) alert(`Rientro registrato! \nATTENZIONE: le seguenti casse NON risultavano in prestito e sono state ignorate: ${codiciRimastiDaElaborare.join(', ')}`);
-                try { if(html5QrcodeScannerRientro) html5QrcodeScannerRientro.clear(); document.getElementById('reader-rientro').style.display='none'; } catch(e){}
+                chiudiScanner(html5QrcodeScannerRientro, 'reader-rientro'); html5QrcodeScannerRientro = null;
                 rientroCliente.value = ''; rientroCodici.value = '';
             } catch (error) { console.error(error); alert("Errore nel rientro."); }
             btnConfermaRientro.disabled = false;
@@ -535,12 +590,11 @@
             btnConfermaRientroTotale.disabled = true;
 
             try {
-                const q = query(collection(db, "prestiti"), where("cliente", "==", nomeCliente), where("tipo", "==", "prestito"));
-                const snap = await getDocs(q);
-                if (snap.empty) { alert(`Nessun prestito attivo trovato per il cliente ${nomeCliente}.`); btnConfermaRientroTotale.disabled = false; return; }
+                const prestitiCliente = await prestitiAttiviDi(nomeCliente);
+                if (prestitiCliente.length === 0) { alert(`Nessun prestito attivo trovato per il cliente ${nomeCliente}.`); btnConfermaRientroTotale.disabled = false; return; }
 
                 let totaleRientrate = 0; let codiciRientratiAll = []; const batch = writeBatch(db);
-                snap.forEach(d => {
+                prestitiCliente.forEach(d => {
                     const codici = d.data().codici || []; totaleRientrate += codici.length; codiciRientratiAll.push(...codici);
                     batch.delete(doc(db, "prestiti", d.id));
                 });
@@ -554,8 +608,8 @@
                 document.getElementById('print-codici').innerText = codiciRientratiAll.join(', ');
                 window.print();
                 
-                try { if(html5QrcodeScannerRientro) html5QrcodeScannerRientro.clear(); document.getElementById('reader-rientro').style.display='none'; } catch(e){}
-                rientroCliente.value = ''; rientroCodici.value = ''; 
+                chiudiScanner(html5QrcodeScannerRientro, 'reader-rientro'); html5QrcodeScannerRientro = null;
+                rientroCliente.value = ''; rientroCodici.value = '';
             } catch (error) { console.error(error); alert("Errore nel rientro totale."); }
             btnConfermaRientroTotale.disabled = false;
         });
@@ -564,99 +618,129 @@
 
         window.eliminaPartita = async (idPartita) => {
             if (!confirm("Sicuro di voler annullare questa partita? Le casse torneranno libere.")) return;
-            const batch = writeBatch(db);
-            const qCasse = await getDocs(query(collection(db, "casse"), where("id_partita_attuale", "==", idPartita)));
-            qCasse.forEach(c => batch.update(doc(db, "casse", c.id), { stato: "libera", id_cliente_attuale: null, id_partita_attuale: null }));
-            const qDep = await getDocs(query(collection(db, "depositi"), where("id_partita", "==", idPartita)));
-            qDep.forEach(d => batch.delete(doc(db, "depositi", d.id)));
-            batch.delete(doc(db, "partite", idPartita));
-            await batch.commit(); alert("Partita annullata con successo.");
+            try {
+                const batch = writeBatch(db);
+                const qCasse = await getDocs(query(collection(db, "casse"), where("id_partita_attuale", "==", idPartita)));
+                qCasse.forEach(c => batch.update(doc(db, "casse", c.id), { stato: "libera", id_cliente_attuale: null, id_partita_attuale: null }));
+                const qDep = await getDocs(query(collection(db, "depositi"), where("id_partita", "==", idPartita)));
+                qDep.forEach(d => batch.delete(doc(db, "depositi", d.id)));
+                batch.delete(doc(db, "partite", idPartita));
+                await batch.commit(); alert("Partita annullata con successo.");
+            } catch (error) { console.error(error); alert("Errore durante l'annullamento della partita."); }
         };
 
         window.registraRientroManuale = async (id, cliente, codiciInPrestitoStr) => {
             const codiciDaRientrareStr = prompt(`Registra rientro per ${cliente}.\nCasse in prestito: ${codiciInPrestitoStr}\n\nInserisci i codici restituiti (separati da spazio o virgola):`);
             if (codiciDaRientrareStr === null) return;
-            const codiciRientrati = codiciDaRientrareStr.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
+            const codiciRientrati = parseCodici(codiciDaRientrareStr);
             if (codiciRientrati.length === 0) return;
 
-            const codiciInPrestito = codiciInPrestitoStr.split(', ');
+            const codiciInPrestito = parseCodici(codiciInPrestitoStr);
             let codiciRimanenti = [...codiciInPrestito]; let rientratiEffettivi = [];
             codiciRientrati.forEach(cod => { const index = codiciRimanenti.indexOf(cod); if (index !== -1) { codiciRimanenti.splice(index, 1); rientratiEffettivi.push(cod); } });
             if (rientratiEffettivi.length === 0) { alert("Nessun codice inserito corrisponde alle casse in prestito per questo cliente."); return; }
 
             try {
-                if (codiciRimanenti.length === 0) { await deleteDoc(doc(db, "prestiti", id)); alert(`Tutte le ${rientratiEffettivi.length} casse sono state restituite!`); } 
-                else { await updateDoc(doc(db, "prestiti", id), { codici: codiciRimanenti, numero_totale_casse: codiciRimanenti.length }); alert(`Rientro parziale: ${rientratiEffettivi.length} casse rientrate.`); }
-                await addDoc(collection(db, "prestiti"), { tipo: "rientro", cliente: cliente, numero_totale_casse: rientratiEffettivi.length, codici: rientratiEffettivi, data_prestito: serverTimestamp() });
-            } catch (error) { console.error(error); }
+                // Aggiornamento del prestito e registrazione del rientro insieme: o tutto o niente
+                const batch = writeBatch(db);
+                if (codiciRimanenti.length === 0) batch.delete(doc(db, "prestiti", id));
+                else batch.update(doc(db, "prestiti", id), { codici: codiciRimanenti, numero_totale_casse: codiciRimanenti.length });
+                batch.set(doc(collection(db, "prestiti")), { tipo: "rientro", cliente: cliente, numero_totale_casse: rientratiEffettivi.length, codici: rientratiEffettivi, data_prestito: serverTimestamp() });
+                await batch.commit();
+                alert(codiciRimanenti.length === 0 ? `Tutte le ${rientratiEffettivi.length} casse sono state restituite!` : `Rientro parziale: ${rientratiEffettivi.length} casse rientrate.`);
+            } catch (error) { console.error(error); alert("Errore nel rientro."); }
         };
 
         window.registraRientroTotaleLista = async (id, cliente, codiciInPrestitoStr) => {
             if (!confirm(`Vuoi registrare il rientro TOTALE di tutte le casse per ${cliente}?`)) return;
             try {
-                const codiciRientrati = codiciInPrestitoStr.split(', ');
-                await deleteDoc(doc(db, "prestiti", id));
-                await addDoc(collection(db, "prestiti"), { tipo: "rientro", cliente: cliente, numero_totale_casse: codiciRientrati.length, codici: codiciRientrati, data_prestito: serverTimestamp() });
+                const codiciRientrati = parseCodici(codiciInPrestitoStr);
+                const batch = writeBatch(db);
+                batch.delete(doc(db, "prestiti", id));
+                batch.set(doc(collection(db, "prestiti")), { tipo: "rientro", cliente: cliente, numero_totale_casse: codiciRientrati.length, codici: codiciRientrati, data_prestito: serverTimestamp() });
+                await batch.commit();
                 alert(`Rientro totale registrato!`);
-            } catch (error) { console.error(error); }
+            } catch (error) { console.error(error); alert("Errore nel rientro totale."); }
         };
 
         window.modificaPrestitoRiepilogo = async (id, currentClient, currentCodiciStr) => {
             const nuovoCliente = prompt("Modifica Nome Cliente:", currentClient); if (nuovoCliente === null) return;
+            if (!nuovoCliente.trim()) { alert("Il nome del cliente non può essere vuoto!"); return; }
             const codiciPrompt = prompt("Modifica i codici delle casse prestate:", currentCodiciStr); if (codiciPrompt === null) return;
-            const nuoviCodici = codiciPrompt.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
-            if (nuoviCodici.length === 0) return;
-            try { await updateDoc(doc(db, "prestiti", id), { cliente: nuovoCliente.trim(), codici: nuoviCodici, numero_totale_casse: nuoviCodici.length }); } catch (error) {}
+            const nuoviCodici = parseCodici(codiciPrompt);
+            if (nuoviCodici.length === 0) { alert("Inserisci almeno un codice cassa!"); return; }
+            try { await updateDoc(doc(db, "prestiti", id), { cliente: nuovoCliente.trim(), codici: nuoviCodici, numero_totale_casse: nuoviCodici.length }); }
+            catch (error) { console.error(error); alert("Errore durante la modifica del prestito."); }
         };
 
         window.eliminaPrestitoRiepilogo = async (id, nomeCliente) => {
             if (!confirm(`Eliminare il prestito di "${nomeCliente}"?`)) return;
-            try { await deleteDoc(doc(db, "prestiti", id)); } catch (error) {}
+            try { await deleteDoc(doc(db, "prestiti", id)); } catch (error) { console.error(error); alert("Errore durante l'eliminazione del prestito."); }
         };
 
         function mostraListaAnagrafica(clienti) {
             if (clienti.length === 0) { document.getElementById('contenitore-lista-clienti').innerHTML = '<p style="color: #666; text-align: center;">Nessun cliente.</p>'; return; }
             let html = '';
             clienti.sort((a, b) => a.nome.localeCompare(b.nome)).forEach(c => {
-                const nomeEscaped = c.nome.replace(/'/g, "\\'"); const telEscaped = c.telefono.replace(/'/g, "\\'"); const noteEscaped = c.note.replace(/'/g, "\\'");
-                html += `<div class="riga-anagrafica"><div><strong>${c.nome}</strong><br>📞 Tel: ${c.telefono} ${c.note ? ' | 📝 ' + c.note : ''}</div>
-                        <div style="white-space: nowrap;"><button onclick="window.modificaCliente('${c.id}', '${nomeEscaped}', '${telEscaped}', '${noteEscaped}')" style="background:#ff9800; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer;">✏️</button>
-                        <button onclick="window.eliminaCliente('${c.id}', '${nomeEscaped}')" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer; margin-left:4px;">🗑️</button></div></div>`;
+                html += `<div class="riga-anagrafica"><div><strong>${esc(c.nome)}</strong><br>📞 Tel: ${esc(c.telefono)} ${c.note ? ' | 📝 ' + esc(c.note) : ''}</div>
+                        <div style="white-space: nowrap;"><button onclick="window.modificaCliente(${arg(c.id)}, ${arg(c.nome)}, ${arg(c.telefono)}, ${arg(c.note)})" style="background:#ff9800; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer;">✏️</button>
+                        <button onclick="window.eliminaCliente(${arg(c.id)}, ${arg(c.nome)})" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer; margin-left:4px;">🗑️</button></div></div>`;
             });
             document.getElementById('contenitore-lista-clienti').innerHTML = html;
         }
 
         window.modificaCliente = async (id, currentNome, currentTelefono, currentNote) => {
             const nuovoNome = prompt("Nome:", currentNome); if (nuovoNome === null) return;
-            const nuovoTel = prompt("Telefono:", currentTelefono === 'N/D' ? '' : currentTelefono);
-            const nuoveNote = prompt("Note:", currentNote);
-            try { await updateDoc(doc(db, "clienti", id), { nome: nuovoNome.trim(), telefono: nuovoTel.trim(), note: nuoveNote.trim() }); } catch (error) {}
+            const nome = nuovoNome.trim();
+            if (!nome) { alert("Il nome non può essere vuoto!"); return; }
+            const idOmonimo = mappaClienti[nome.toLowerCase()];
+            if (idOmonimo && idOmonimo !== id) { alert(`Esiste già un altro cliente di nome "${nome}". Usa un nome diverso (es. aggiungi la contrada).`); return; }
+            const telAttuale = currentTelefono === 'N/D' ? '' : currentTelefono;
+            // Se si preme "Annulla" su telefono o note, il valore attuale resta invariato
+            const nuovoTel = prompt("Telefono:", telAttuale) ?? telAttuale;
+            const nuoveNote = prompt("Note:", currentNote) ?? currentNote;
+            try { await updateDoc(doc(db, "clienti", id), { nome, telefono: nuovoTel.trim(), note: nuoveNote.trim() }); }
+            catch (error) { console.error(error); alert("Errore durante la modifica del cliente."); }
         };
 
         window.eliminaCliente = async (id, nome) => {
+            if (partiteAperteData.some(p => p.id_cliente === id)) { alert(`Impossibile eliminare "${nome}": ha ancora casse in attesa nel piazzale. Chiudi prima la molitura o annulla la partita.`); return; }
             if (!confirm(`Eliminare "${nome}"?`)) return;
-            try { await deleteDoc(doc(db, "clienti", id)); } catch (error) {}
+            try { await deleteDoc(doc(db, "clienti", id)); } catch (error) { console.error(error); alert("Errore durante l'eliminazione del cliente."); }
         };
 
         document.getElementById('btn-salva-anagrafica').addEventListener('click', async () => {
-            const nome = document.getElementById('anag-nome').value.trim(); if (!nome) return;
+            const nome = document.getElementById('anag-nome').value.trim();
+            if (!nome) { alert("Inserisci almeno il nome del cliente!"); return; }
+            if (mappaClienti[nome.toLowerCase()]) { alert(`Esiste già un cliente di nome "${nome}". Usa un nome diverso (es. aggiungi la contrada).`); return; }
             try {
                 await setDoc(doc(collection(db, "clienti")), { nome, telefono: document.getElementById('anag-telefono').value.trim(), note: document.getElementById('anag-note').value.trim() });
-                document.getElementById('anag-nome').value = ''; document.getElementById('anag-telefono').value = ''; document.getElementById('anag-note').value = ''; 
-            } catch (error) {}
+                document.getElementById('anag-nome').value = ''; document.getElementById('anag-telefono').value = ''; document.getElementById('anag-note').value = '';
+            } catch (error) { console.error(error); alert("Errore durante il salvataggio del cliente."); }
         });
 
         if (btnChiudiMolitura) {
             btnChiudiMolitura.addEventListener('click', async () => {
                 const idPartita = mappaPartiteAperte[inputMolituraCliente.value.trim().toLowerCase()];
-                const peso = parseFloat(inputPeso.value);
-                if (!idPartita || !peso) { alert("Dati non validi!"); return; }
-                const batch = writeBatch(db);
-                const pd = (await getDoc(doc(db, "partite", idPartita))).data();
-                pd.codici_casse.forEach(c => batch.update(doc(db, "casse", c), { stato: "libera", id_cliente_attuale: null, id_partita_attuale: null }));
-                batch.update(doc(db, "partite", idPartita), { stato: "molita" });
-                batch.set(doc(collection(db, "moliture")), { tipo: "deposito", id_partita: idPartita, id_cliente: pd.id_cliente, peso_totale_kg: peso, data_molitura: new Date(), codici_casse: pd.codici_casse, numero_casse: pd.codici_casse.length });
-                await batch.commit(); inputPeso.value = ''; inputMolituraCliente.value = ''; 
+                const peso = parseFloat(String(inputPeso.value).replace(',', '.'));
+                if (!idPartita) { alert("Seleziona un cliente valido dalla lista (con casse in attesa nel piazzale)!"); return; }
+                if (!peso || peso <= 0) { alert("Inserisci un peso valido in Kg!"); return; }
+                btnChiudiMolitura.disabled = true;
+                try {
+                    const partitaSnap = await getDoc(doc(db, "partite", idPartita));
+                    if (!partitaSnap.exists() || partitaSnap.data().stato !== "aperta") { alert("Questa partita è già stata chiusa o annullata."); btnChiudiMolitura.disabled = false; return; }
+                    const pd = partitaSnap.data();
+                    const codici = pd.codici_casse || [];
+                    const batch = writeBatch(db);
+                    const casseSnap = await getDocs(query(collection(db, "casse"), where("id_partita_attuale", "==", idPartita)));
+                    casseSnap.forEach(c => batch.update(doc(db, "casse", c.id), { stato: "libera", id_cliente_attuale: null, id_partita_attuale: null }));
+                    batch.update(doc(db, "partite", idPartita), { stato: "molita" });
+                    batch.set(doc(collection(db, "moliture")), { tipo: "deposito", id_partita: idPartita, id_cliente: pd.id_cliente, cliente: (clientiCache[pd.id_cliente] || {}).nome || "", peso_totale_kg: peso, data_molitura: new Date(), codici_casse: codici, numero_casse: codici.length });
+                    await batch.commit();
+                    alert(`Molitura chiusa! Registrati ${peso} kg. Le casse sono tornate libere.`);
+                    inputPeso.value = ''; inputMolituraCliente.value = '';
+                } catch (error) { console.error(error); alert("Errore durante la chiusura della molitura."); }
+                btnChiudiMolitura.disabled = false;
             });
         }
 
@@ -687,18 +771,15 @@
                 else badgeHtml = '<span class="badge-rientro">RIENTRO</span>';
 
                 let dettaglioExtra = '';
-                if (s.tipo === 'deposito') dettaglioExtra = `<strong>${s.kg}</strong> kg`;
+                if (s.tipo === 'deposito') dettaglioExtra = `<strong>${esc(s.kg)}</strong> kg`;
                 else if (s.tipo === 'prestito') dettaglioExtra = `<em style="color:#009688;">Casse Prestate</em>`;
                 else dettaglioExtra = `<em style="color:#9C27B0;">Casse Restituite</em>`;
 
-                const clienteEscaped = s.cliente.replace(/'/g, "\\'");
-                const codiciEscaped = s.codici.replace(/'/g, "\\'");
-
                 html += `<tr style="border-bottom:1px solid #eee;"><td style="padding:8px; white-space:nowrap;">${s.data}</td><td style="padding:8px;">${badgeHtml}</td>
-                        <td style="padding:8px;"><strong>${s.cliente}</strong></td><td style="padding:8px;">${dettaglioExtra}<br><small style="color:#555;">Codici: ${s.codici}</small></td>
+                        <td style="padding:8px;"><strong>${esc(s.cliente)}</strong></td><td style="padding:8px;">${dettaglioExtra}<br><small style="color:#555;">Codici: ${esc(s.codici)}</small></td>
                         <td style="padding:8px; white-space:nowrap; text-align:right;">
-                            <button onclick="window.modificaStorico('${s.id}', '${s.tipo}', '${clienteEscaped}', ${s.kg}, '${codiciEscaped}', '${s.idCliente || ''}')" style="background:#ff9800; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer;">✏️</button>
-                            <button onclick="window.eliminaStorico('${s.id}', '${s.tipo}')" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer; margin-left:4px;">🗑️</button>
+                            <button onclick="window.modificaStorico(${arg(s.id)}, ${arg(s.tipo)}, ${arg(s.cliente)}, ${arg(s.kg)}, ${arg(s.codici)}, ${arg(s.idCliente || '')})" style="background:#ff9800; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer;">✏️</button>
+                            <button onclick="window.eliminaStorico(${arg(s.id)}, ${arg(s.tipo)})" style="background:#d32f2f; color:white; border:none; padding:4px 8px; border-radius:3px; font-size:12px; cursor:pointer; margin-left:4px;">🗑️</button>
                         </td></tr>`;
             });
             html += '</table>';  tbody.innerHTML = html;
@@ -712,26 +793,38 @@
 
         window.modificaStorico = async (idDoc, tipo, currentClient, currentKg, currentCodiciStr, idClienteRef) => {
             const nuovoCliente = prompt("Modifica Nome Cliente:", currentClient); if (nuovoCliente === null) return;
+            const nomeNuovo = nuovoCliente.trim();
+            if (!nomeNuovo) { alert("Il nome del cliente non può essere vuoto!"); return; }
             let nuovoKg = currentKg;
             if (tipo === 'deposito') {
                 const kgPrompt = prompt("Modifica il peso totale delle olive (Kg):", currentKg); if (kgPrompt === null) return;
-                nuovoKg = parseFloat(kgPrompt); if (isNaN(nuovoKg) || nuovoKg < 0) return;
+                nuovoKg = parseFloat(kgPrompt.replace(',', '.')); if (isNaN(nuovoKg) || nuovoKg < 0) { alert("Peso non valido!"); return; }
             }
             const codiciPrompt = prompt("Modifica i codici delle casse:", currentCodiciStr); if (codiciPrompt === null) return;
-            const nuoviCodici = codiciPrompt.split(/[\s,]+/).map(c => c.trim().toUpperCase()).filter(c => c.length > 0);
-            if (nuoviCodici.length === 0) return;
+            const nuoviCodici = parseCodici(codiciPrompt);
+            if (nuoviCodici.length === 0) { alert("Inserisci almeno un codice cassa!"); return; }
 
             try {
-                const updateData = { codici: nuoviCodici, numero_totale_casse: nuoviCodici.length, cliente: nuovoCliente.trim() };
-                if (tipo === 'deposito') { updateData.peso_totale_kg = nuovoKg; updateData.codici_casse = nuoviCodici; updateData.numero_casse = nuoviCodici.length; } 
+                const updateData = { codici: nuoviCodici, numero_totale_casse: nuoviCodici.length, cliente: nomeNuovo };
+                let rinominaCliente = false;
+                if (tipo === 'deposito') {
+                    updateData.peso_totale_kg = nuovoKg; updateData.codici_casse = nuoviCodici; updateData.numero_casse = nuoviCodici.length;
+                    // Se il nome è quello di un ALTRO cliente in anagrafica, la molitura viene assegnata a lui
+                    // (prima veniva rinominato il cliente originale, creando due clienti con lo stesso nome).
+                    // Altrimenti si corregge il nome del cliente collegato.
+                    const idEsistente = mappaClienti[nomeNuovo.toLowerCase()];
+                    if (idEsistente && idEsistente !== idClienteRef) updateData.id_cliente = idEsistente;
+                    else rinominaCliente = !!(idClienteRef && clientiCache[idClienteRef] && clientiCache[idClienteRef].nome !== nomeNuovo);
+                }
                 await updateDoc(doc(db, tipo === 'deposito' ? 'moliture' : 'prestiti', idDoc), updateData);
-                if (tipo === 'deposito' && idClienteRef) { await updateDoc(doc(db, "clienti", idClienteRef), { nome: nuovoCliente.trim() }); }
-            } catch (error) { console.error(error); }
+                if (rinominaCliente) await updateDoc(doc(db, "clienti", idClienteRef), { nome: nomeNuovo });
+            } catch (error) { console.error(error); alert("Errore durante la modifica."); }
         };
 
         window.eliminaStorico = async (idDoc, tipo) => {
             if (!confirm("Eliminare questa voce dallo storico?")) return;
-            await deleteDoc(doc(db, tipo === 'deposito' ? 'moliture' : 'prestiti', idDoc)); 
+            try { await deleteDoc(doc(db, tipo === 'deposito' ? 'moliture' : 'prestiti', idDoc)); }
+            catch (error) { console.error(error); alert("Errore durante l'eliminazione."); }
         };
 
         if (btnEsportaExcel) {
@@ -755,7 +848,8 @@
                 datiDaEsportare.forEach(s => {
                     const clienteClean = s.cliente.replace(/"/g, '""'); const codiciClean = s.codici.replace(/"/g, '""');
                     const tipoStr = s.tipo.toUpperCase();
-                    csvContent += `"${s.data}";"${tipoStr}";"${clienteClean}";"${s.kg}";"${s.numCasse}";"${codiciClean}"\n`;
+                    // Virgola decimale: Excel in italiano legge "500,5" come numero (con il punto lo prende come testo o data)
+                    csvContent += `"${s.data}";"${tipoStr}";"${clienteClean}";"${String(s.kg).replace('.', ',')}";"${s.numCasse}";"${codiciClean}"\n`;
                 });
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
